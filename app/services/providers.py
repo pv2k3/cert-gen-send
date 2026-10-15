@@ -35,24 +35,16 @@ def _path() -> str:
 
 
 def _seed_from_env() -> List[Dict]:
-    by_sender: Dict[str, Dict] = {}
-    for label, acc in config.load_accounts().items():
-        p = by_sender.setdefault(acc["from_email"], {
-            "id": uuid.uuid4().hex[:8], "type": "resend", "name": "Resend" if not by_sender else f"Resend {len(by_sender) + 1}",
-            "from_email": acc["from_email"], "keys": [], "fallback_to_next": True,
-        })
-        p["keys"].append({"id": uuid.uuid4().hex[:8], "label": label, "key": acc["key"]})
-    result = list(by_sender.values())
+    result: List[Dict] = []
     if os.getenv("SMTP_HOST"):
-        user = os.getenv("SMTP_USERNAME", "")
+        user = os.getenv("SMTP_USER") or os.getenv("SMTP_USERNAME", "")
         result.append({
             "id": uuid.uuid4().hex[:8], "type": "smtp", "name": "SMTP", "host": os.getenv("SMTP_HOST"),
             "port": int(os.getenv("SMTP_PORT", "587")), "security": os.getenv("SMTP_SECURITY", "starttls"),
             "username": user, "password": os.getenv("SMTP_PASSWORD", "") if user else "",
-            "from_email": os.getenv("SMTP_FROM_EMAIL") or os.getenv("FROM_EMAIL") or user, "fallback_to_next": False,
+            "from_email": os.getenv("SMTP_FROM") or os.getenv("SMTP_FROM_EMAIL") or os.getenv("FROM_EMAIL") or user,
+            "from_name": os.getenv("SMTP_FROM_NAME", ""), "fallback_to_next": False,
         })
-        if len(result) > 1:
-            result[-2]["fallback_to_next"] = True  # Resend first, SMTP as the fallback
     return result
 
 
@@ -84,8 +76,8 @@ def save(providers: List[Dict]) -> None:
 def is_ready(p: Dict) -> bool:
     if not p.get("from_email"):
         return False
-    if p["type"] == "resend":
-        return any(k.get("key") for k in p.get("keys", []))
+    if p["type"] != "smtp":  # mail is always sent over SMTP; Resend providers are ignored
+        return False
     return bool(p.get("host"))
 
 
@@ -155,6 +147,7 @@ def sanitize(incoming: List[Dict], existing: List[Dict]) -> List[Dict]:
                 raise ValueError(f"'{name}': security must be ssl, starttls or none")
             username = (raw.get("username") or "").strip()
             p.update(host=host, port=port, security=raw["security"], username=username,
+                     from_name=prev.get("from_name", ""),
                      password=((raw.get("password") or "") or prev.get("password", "")) if username else "")
         else:
             raise ValueError(f"'{name}': unknown provider type")
@@ -253,7 +246,7 @@ class SMTPSender:
 
     def _build(self, msg: Dict) -> EmailMessage:
         m = EmailMessage()
-        m["From"] = _from_header(msg["from_name"], self.p["from_email"])
+        m["From"] = _from_header(msg["from_name"] or self.p.get("from_name", ""), self.p["from_email"])
         m["To"] = ", ".join(msg["to"])
         m["Subject"] = msg["subject"]
         m["Message-ID"] = make_msgid()
